@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>이미지 분석기</title>
+    <style>
+        body { font-family: 'Malgun Gothic', sans-serif; padding: 20px; line-height: 1.6; color: #333; max-width: 950px; margin: 0 auto; background-color: #f4f7f9; }
+        .card { background: white; border-radius: 15px; padding: 30px; box-shadow: 0 10px 25px rgba(0,0,0,0.1); }
+        h1 { color: #1a73e8; text-align: center; margin-top: 0; }
+        .status-bar { text-align: center; padding: 10px; margin-bottom: 20px; border-radius: 8px; font-weight: bold; background: #e8f0fe; color: #1967d2; }
+        .upload-container { display: flex; gap: 20px; margin-bottom: 25px; }
+        .box { flex: 1; border: 2px dashed #bdc1c6; padding: 15px; border-radius: 10px; text-align: center; background: #fff; }
+        button { width: 100%; padding: 15px; background: #1a73e8; color: white; border: none; border-radius: 8px; font-size: 18px; font-weight: bold; cursor: pointer; transition: 0.3s; }
+        button:hover { background: #174ea6; }
+        button:disabled { background: #dadce0; cursor: not-allowed; }
+        #resultArea { margin-top: 30px; display: none; padding: 25px; border-radius: 10px; background: #fff; border: 1px solid #e0e0e0; border-top: 6px solid #1a73e8; }
+        .option-box { background: #f8f9fa; padding: 15px; border-radius: 8px; margin-bottom: 15px; border: 1px solid #dee2e6; }
+        .option-title { font-weight: bold; color: #1a73e8; margin-bottom: 10px; display: block; }
+        .value { color: #d93025; font-weight: bold; font-size: 1.1em; }
+        canvas { max-width: 100%; height: auto; border-radius: 8px; margin-top: 15px; border: 1px solid #ddd; }
+        .hidden { display: none; }
+    </style>
+</head>
+<body>
+
+<div class="card">
+    <h1>이미지 정렬 분석기 (v3.1)</h1>
+    <div id="status" class="status-bar">⚙️ 라이브러리 준비 중...</div>
+
+    <div class="upload-container">
+        <div class="box">
+            <strong>[사진 A - 원본]</strong><br>
+            <input type="file" id="fileA" accept="image/*">
+            <canvas id="canvasA" class="hidden"></canvas>
+        </div>
+        <div class="box">
+            <strong>[사진 B - 수정본]</strong><br>
+            <input type="file" id="fileB" accept="image/*">
+            <canvas id="canvasB" class="hidden"></canvas>
+        </div>
+    </div>
+
+    <button id="runBtn" onclick="analyze()" disabled>분석 시작</button>
+
+    <div id="resultArea">
+        <h2>📊 분석 결과</h2>
+        
+        <div class="option-box">
+            <span class="option-title">옵션 1: 사진 B를 사진 A에 맞추기</span>
+            B를 <span id="scaleB" class="value">--</span>% 크기로 조절한 뒤,<br>
+            가로 <span id="moveXB" class="value">--</span>px, 세로 <span id="moveYB" class="value">--</span>px 이동하세요.
+        </div>
+
+        <div class="option-box">
+            <span class="option-title">옵션 2: 사진 A를 사진 B에 맞추기</span>
+            A를 <span id="scaleA" class="value">--</span>% 크기로 조절한 뒤,<br>
+            가로 <span id="moveXA" class="value">--</span>px, 세로 <span id="moveYA" class="value">--</span>px 이동하세요.
+        </div>
+
+        <div class="option-box" style="border-top: 3px solid #34a853;">
+            <span class="option-title" style="color: #34a853;">✂️ 크롭(Crop) 가이드</span>
+            <div id="cropInfo">사진을 분석하면 자를 위치가 계산됩니다.</div>
+        </div>
+
+        <canvas id="canvasMatch"></canvas>
+    </div>
+</div>
+
+<script async src="https://docs.opencv.org/4.5.4/opencv.js" onload="cvLoaded()"></script>
+
+<script>
+    const runBtn = document.getElementById('runBtn');
+    const statusTxt = document.getElementById('status');
+    let wA, hA, wB, hB;
+
+    function cvLoaded() {
+        statusTxt.innerText = "✅ 준비 완료! 사진을 업로드하세요.";
+        runBtn.disabled = false;
+    }
+
+    function handleFile(inputId, canvasId) {
+        document.getElementById(inputId).addEventListener('change', (e) => {
+            const reader = new FileReader();
+            reader.onload = (event) => {
+                const img = new Image();
+                img.onload = () => {
+                    const canvas = document.getElementById(canvasId);
+                    canvas.width = img.width; canvas.height = img.height;
+                    if(canvasId === 'canvasA') { wA = img.width; hA = img.height; }
+                    else { wB = img.width; hB = img.height; }
+                    canvas.getContext('2d').drawImage(img, 0, 0);
+                };
+                img.src = event.target.result;
+            };
+            reader.readAsDataURL(e.target.files[0]);
+        });
+    }
+    handleFile('fileA', 'canvasA'); handleFile('fileB', 'canvasB');
+
+    async function analyze() {
+        statusTxt.innerText = "⏳ 연산 중...";
+        runBtn.disabled = true;
+
+        await new Promise(r => setTimeout(r, 100));
+
+        let src, dst, gSrc, gDst, orb, kp1, kp2, ds1, ds2, matcher, knnMatches, H, mask;
+
+        try {
+            src = cv.imread('canvasA'); dst = cv.imread('canvasB');
+            gSrc = new cv.Mat(); gDst = new cv.Mat();
+            cv.cvtColor(src, gSrc, cv.COLOR_RGBA2GRAY);
+            cv.cvtColor(dst, gDst, cv.COLOR_RGBA2GRAY);
+
+            orb = new cv.ORB(3000);
+            kp1 = new cv.KeyPointVector(); kp2 = new cv.KeyPointVector();
+            ds1 = new cv.Mat(); ds2 = new cv.Mat();
+            orb.detectAndCompute(gSrc, new cv.Mat(), kp1, ds1);
+            orb.detectAndCompute(gDst, new cv.Mat(), kp2, ds2);
+
+            matcher = new cv.BFMatcher(cv.NORM_HAMMING);
+            knnMatches = new cv.DMatchVectorVector();
+            matcher.knnMatch(ds1, ds2, knnMatches, 2);
+
+            let goodMatches = new cv.DMatchVector();
+            let p1 = [], p2 = [];
+            for (let i = 0; i < knnMatches.size(); i++) {
+                let match = knnMatches.get(i);
+                if (match.size() < 2) continue;
+                let m = match.get(0), n = match.get(1);
+                if (m.distance < 0.7 * n.distance) {
+                    goodMatches.push_back(m);
+                    p1.push(kp1.get(m.queryIdx).pt.x, kp1.get(m.queryIdx).pt.y);
+                    p2.push(kp2.get(m.trainIdx).pt.x, kp2.get(m.trainIdx).pt.y);
+                }
+            }
+
+            if (p1.length < 8) throw new Error("공통점이 부족합니다.");
+
+            let mat1 = cv.matFromArray(p1.length / 2, 1, cv.CV_32FC2, p1);
+            let mat2 = cv.matFromArray(p2.length / 2, 1, cv.CV_32FC2, p2);
+            mask = new cv.Mat();
+            H = cv.findHomography(mat2, mat1, cv.RANSAC, 3.0, mask);
+
+            let data = H.data64F;
+            let S = Math.sqrt(data[0]**2 + data[3]**2); 
+            let tx = data[2]; 
+            let ty = data[5];
+
+            // 1. 수치 출력 (B to A) - 이동값 반올림
+            document.getElementById('scaleB').innerText = (S * 100).toFixed(2);
+            document.getElementById('moveXB').innerText = Math.round(tx);
+            document.getElementById('moveYB').innerText = Math.round(ty);
+
+            // 2. 수치 출력 (A to B) - 이동값 반올림
+            document.getElementById('scaleA').innerText = ((1/S) * 100).toFixed(2);
+            document.getElementById('moveXA').innerText = Math.round(-tx/S);
+            document.getElementById('moveYA').innerText = Math.round(-ty/S);
+
+            // 3. 크롭(Crop) 로직 계산 (반올림 적용)
+            let cropHTML = "";
+            let cAL = Math.round(Math.max(0, tx));
+            let cAT = Math.round(Math.max(0, ty));
+            let cAR = Math.round(Math.max(0, wA - (tx + wB * S)));
+            let cAB = Math.round(Math.max(0, hA - (ty + hB * S)));
+
+            let cBL = Math.round(Math.max(0, -tx / S));
+            let cBT = Math.round(Math.max(0, -ty / S));
+            let cBR = Math.round(Math.max(0, wB - (wA - tx) / S));
+            let cBB = Math.round(Math.max(0, hB - (hA - ty) / S));
+
+            if (cAL + cAT + cAR + cAB > 0) {
+                cropHTML += `<strong>[사진 A] 자르기:</strong> 왼쪽 ${cAL}px, 위 ${cAT}px, 오른쪽 ${cAR}px, 아래 ${cAB}px<br><br>`;
+            }
+            if (cBL + cBT + cBR + cBB > 0) {
+                cropHTML += `<strong>[사진 B] 자르기:</strong> 왼쪽 ${cBL}px, 위 ${cBT}px, 오른쪽 ${cBR}px, 아래 ${cBB}px`;
+            }
+            
+            document.getElementById('cropInfo').innerHTML = cropHTML || "영역이 정수 단위로 완벽히 일치합니다.";
+
+            let mImg = new cv.Mat();
+            cv.drawMatches(src, kp1, dst, kp2, goodMatches, mImg, new cv.Scalar(0, 255, 0, 255), new cv.Scalar(255, 0, 0, 255));
+            cv.imshow('canvasMatch', mImg);
+
+            document.getElementById('resultArea').style.display = "block";
+            statusTxt.innerText = "✅ 분석 완료!";
+            mImg.delete(); mat1.delete(); mat2.delete();
+
+        } catch (e) {
+            alert("오류: " + e.message);
+            statusTxt.innerText = "❌ 다시 시도해주세요.";
+        } finally {
+            if(src) src.delete(); if(dst) dst.delete();
+            if(gSrc) gSrc.delete(); if(gDst) gDst.delete();
+            if(orb) orb.delete(); if(kp1) kp1.delete(); if(kp2) kp2.delete();
+            if(ds1) ds1.delete(); if(ds2) ds2.delete();
+            if(matcher) matcher.delete(); if(knnMatches) knnMatches.delete();
+            if(H) H.delete(); if(mask) mask.delete();
+            runBtn.disabled = false;
+        }
+    }
+</script>
+</body>
+</html>
